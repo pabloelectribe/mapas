@@ -15,11 +15,11 @@ Todo usa servicios abiertos y gratuitos, sin claves de API:
 
 | Qué | Servicio |
 | --- | --- |
-| Rutas señalizadas (`route=running/fitness_trail/foot/hiking`), pistas atléticas, parques, reservas, cerros e inicios de sendero | OpenStreetMap vía Overpass API |
+| Rutas señalizadas (`route=running/fitness_trail/foot/hiking`), pistas atléticas, parques, reservas, cerros e inicios de sendero | OpenStreetMap vía Overpass API (a través de `/api/overpass`, proxy con caché y servidores espejo) |
 | Trazado de circuitos por calles, parques y senderos | OSRM, perfil peatonal (routing.openstreetmap.de) |
 | Altimetría (desnivel y perfil) | Open‑Meteo Elevation (Copernicus DEM 90 m) |
 | Búsqueda de lugares | Nominatim |
-| Mapa base | CARTO Voyager + OpenStreetMap |
+| Mapa base (Mapa / Relieve / Satélite) | OpenStreetMap, OpenTopoMap, Esri World Imagery |
 
 **Candidatos:** rutas señalizadas de OSM (completas, tramo ida y vuelta o N vueltas según
 la distancia), pistas atléticas (hasta 10 km), circuitos generados desde tu ubicación y
@@ -47,7 +47,9 @@ npx http-server -p 8080 .
 # abre http://localhost:8080
 ```
 
-Se puede publicar tal cual en GitHub Pages, Netlify o Vercel.
+En local, `/api/overpass` no existe y la app consulta Overpass directamente.
+Publicada en Vercel (https://trota-mapas.vercel.app), la función `api/overpass.js`
+hace de proxy: prueba varios servidores espejo y guarda las respuestas en caché.
 
 ## Estructura
 
@@ -58,6 +60,7 @@ js/app.js           Interfaz, mapa (Leaflet), geolocalización, GPX
 js/routes.js        Motor de recomendación: candidatos, altimetría, puntaje
 js/services.js      Clientes de Overpass, OSRM, Open‑Meteo y Nominatim
 js/geo.js           Utilidades geográficas
+api/overpass.js     Función de Vercel: proxy de Overpass con caché
 vendor/leaflet/     Leaflet 1.9.4 (BSD‑2)
 ```
 

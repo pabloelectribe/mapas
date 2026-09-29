@@ -299,3 +299,7 @@ input[type="range"] { width: 100%; accent-color: var(--purple); height: 28px; }
 @keyframes pulse { 50% { opacity: .35; } }
 @keyframes ping { from { transform: scale(1); opacity: .6; } to { transform: scale(3.2); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* Selector de capas del mapa */
+.leaflet-control-layers { border-radius: 12px !important; border: 0 !important; box-shadow: 0 4px 16px rgba(0, 0, 0, .3) !important; }
+.leaflet-control-layers-expanded { padding: 8px 12px !important; font: 500 13px/1.6 var(--font); color: var(--ink); }

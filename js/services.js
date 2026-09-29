@@ -4,9 +4,12 @@
 //  - Open-Meteo Elevation (Copernicus DEM 90 m): altimetría.
 //  - Nominatim: búsqueda de lugares por nombre.
 
+// Primero el proxy propio (/api/overpass, con caché); si no existe (p. ej. en local),
+// directo a los servidores públicos.
 const OVERPASS = [
+  "/api/overpass",
   "https://overpass-api.de/api/interpreter",
-  "https://overpass.kumi.systems/api/interpreter",
+  "https://overpass.private.coffee/api/interpreter",
 ];
 const OSRM_FOOT = "https://routing.openstreetmap.de/routed-foot/route/v1/foot";
 const ELEVATION = "https://api.open-meteo.com/v1/elevation";
@@ -17,7 +20,7 @@ async function fetchJSON(url, options = {}, timeoutMs = 30000) {
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetch(url, { ...options, signal: ctrl.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status} en ${new URL(url).host}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status} en ${new URL(url, location.href).host}`);
     return await res.json();
   } finally {
     clearTimeout(timer);
@@ -38,21 +41,25 @@ export async function overpass(query) {
         40000
       );
     } catch (e) {
+      console.warn(`Overpass ${endpoint}:`, e.message);
       lastError = e;
     }
   }
   throw lastError;
 }
 
-// Lugares y rutas relevantes para trotar dentro del radio.
-export function fetchRunningFeatures([lat, lon], radiusM, bbox) {
-  const around = `(around:${Math.round(radiusM)},${lat},${lon})`;
-  const box = bbox.map((v) => v.toFixed(5)).join(",");
-  const query = `[out:json][timeout:35];
-relation["route"~"^(running|fitness_trail|foot|hiking)$"]${around};
-out tags geom(${box});
-way["leisure"="track"]["sport"~"running|athletics"]${around};
-out tags geom;
+// Lugares y rutas relevantes para trotar dentro del radio, en dos consultas
+// livianas: si una falla, la otra igual aporta candidatos.
+export async function fetchRunningFeatures([lat, lon], radiusM, bbox) {
+  const around = `(around:${Math.round(radiusM)},${lat.toFixed(5)},${lon.toFixed(5)})`;
+  const box = bbox.map((v) => v.toFixed(4)).join(",");
+  const routesQuery = `[out:json][timeout:25];
+(
+  relation["route"~"^(running|fitness_trail|foot|hiking)$"]${around};
+  way["leisure"="track"]["sport"~"running|athletics"]${around};
+);
+out geom(${box}) 40;`;
+  const spotsQuery = `[out:json][timeout:25];
 (
   way["leisure"="park"]["name"]${around};
   relation["leisure"="park"]["name"]${around};
@@ -62,7 +69,15 @@ out tags geom;
   node["highway"="trailhead"]${around};
 );
 out tags center 150;`;
-  return overpass(query);
+  const [routes, spots] = await Promise.allSettled([overpass(routesQuery), overpass(spotsQuery)]);
+  if (routes.status === "rejected" && spots.status === "rejected") throw spots.reason;
+  for (const r of [routes, spots]) if (r.status === "rejected") console.warn("Overpass:", r.reason);
+  return {
+    elements: [
+      ...(routes.status === "fulfilled" ? routes.value.elements || [] : []),
+      ...(spots.status === "fulfilled" ? spots.value.elements || [] : []),
+    ],
+  };
 }
 
 // Ruta peatonal que pasa por los puntos dados. Devuelve geometría [lat, lon], distancia y calles.

@@ -147,21 +147,39 @@ document.addEventListener("click", (e) => {
 // ---------- Mapa ----------
 let map;
 let layers;
+let baseLayers;
 const lines = new Map();
 
 function ensureMap() {
   if (map) return;
   map = L.map("map", { zoomControl: false, attributionControl: true });
   L.control.zoom({ position: "bottomright" }).addTo(map);
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
-    maxZoom: 19,
-    subdomains: "abcd",
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
-  }).addTo(map);
+  const osm = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
+  baseLayers = {
+    Mapa: L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: osm,
+    }),
+    Relieve: L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", {
+      maxZoom: 17,
+      subdomains: "abc",
+      attribution: `${osm}, SRTM | &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)`,
+    }),
+    "Satélite": L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+      maxZoom: 19,
+      attribution: "Imágenes &copy; Esri, Maxar, Earthstar Geographics",
+    }),
+  };
+  L.control.layers(baseLayers, null, { position: "topright" }).addTo(map);
   layers = L.layerGroup().addTo(map);
 }
 
 function drawBase() {
+  const wanted = state.terrain === "hilly" ? "Relieve" : "Mapa";
+  for (const [name, layer] of Object.entries(baseLayers)) {
+    if (name === wanted) layer.addTo(map);
+    else map.removeLayer(layer);
+  }
   layers.clearLayers();
   lines.clear();
   L.circle(state.origin, {
