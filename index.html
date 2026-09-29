@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Trota · Rutas para correr cerca de ti</title>
+  <meta name="description" content="Encuentra las mejores rutas para trotar cerca de ti, filtradas por distancia y altimetría." />
+  <meta name="theme-color" content="#F08A3C" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23F08A3C'/%3E%3Cpath d='M6 22c4 0 5-10 10-10s6 8 10 8' stroke='white' stroke-width='3.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body class="on-start">
+  <header class="topbar">
+    <a class="brand" href="./" aria-label="Trota, inicio">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8"/><path d="M6 22c4 0 5-10 10-10s6 8 10 8"/></svg>
+      TROTA
+    </a>
+  </header>
+
+  <!-- Pantalla 1: pregunta + filtros -->
+  <main id="start" class="screen start">
+    <p class="kicker">Rutas para correr cerca de ti</p>
+    <h1>¿Dónde quieres<br />trotar hoy?</h1>
+
+    <div class="sheet">
+
+    <section class="block">
+      <h2 class="label">Punto de partida</h2>
+      <button id="locate" class="loc-btn" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="7" fill="none"/></svg>
+        <span>Usar mi ubicación</span>
+      </button>
+      <div class="search">
+        <input id="place" type="search" autocomplete="off" placeholder="o busca un parque, comuna o dirección" aria-label="Buscar lugar" />
+        <ul id="place-results" class="place-results" role="listbox" hidden></ul>
+      </div>
+      <p id="loc-status" class="loc-status" aria-live="polite"></p>
+    </section>
+
+    <section class="block">
+      <h2 class="label">Distancia</h2>
+      <div class="chips" id="distance" role="radiogroup" aria-label="Distancia">
+        <button type="button" role="radio" data-v="1">1<small>km</small></button>
+        <button type="button" role="radio" data-v="3">3<small>km</small></button>
+        <button type="button" role="radio" data-v="5">5<small>km</small></button>
+        <button type="button" role="radio" data-v="10">10<small>km</small></button>
+        <button type="button" role="radio" data-v="21">21<small>media</small></button>
+        <button type="button" role="radio" data-v="42">42<small>maratón</small></button>
+      </div>
+    </section>
+
+    <section class="block">
+      <h2 class="label">Altimetría</h2>
+      <div class="terrain" id="terrain" role="radiogroup" aria-label="Altimetría">
+        <button type="button" role="radio" data-v="flat">
+          <svg viewBox="0 0 64 24" aria-hidden="true"><path d="M2 16h60"/></svg>
+          <b>Totalmente plano</b><span>Costaneras, parques, pistas</span>
+        </button>
+        <button type="button" role="radio" data-v="rolling">
+          <svg viewBox="0 0 64 24" aria-hidden="true"><path d="M2 17c8 0 10-6 18-6s10 5 18 5 12-6 24-6"/></svg>
+          <b>Falsos planos</b><span>Subidas suaves y ondulaciones</span>
+        </button>
+        <button type="button" role="radio" data-v="hilly">
+          <svg viewBox="0 0 64 24" aria-hidden="true"><path d="M2 21l12-9 7 5 13-15 10 10 5-4 13 13"/></svg>
+          <b>Con altimetría</b><span>Cerros, trekking y trail</span>
+        </button>
+      </div>
+    </section>
+
+    <section class="block">
+      <h2 class="label">Radio de búsqueda <output id="radius-out">5 km</output></h2>
+      <input id="radius" type="range" min="1" max="25" step="1" value="5" aria-label="Radio de búsqueda en kilómetros" />
+      <div class="range-scale"><span>1 km</span><span>25 km</span></div>
+    </section>
+
+    <button id="go" class="cta" type="button" disabled>
+      Buscar rutas
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+    </button>
+    <p id="go-hint" class="go-hint">Elige tu punto de partida para comenzar.</p>
+    </div>
+  </main>
+
+  <!-- Pantalla 2: mapa + rutas -->
+  <section id="results" class="screen results" hidden>
+    <div id="map" class="map" aria-label="Mapa de rutas"></div>
+    <aside class="panel">
+      <div class="panel-head">
+        <button id="back" class="back" type="button" aria-label="Cambiar filtros">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>
+          Filtros
+        </button>
+        <p id="summary" class="summary"></p>
+      </div>
+      <h2 class="panel-title">Rutas recomendadas</h2>
+      <p class="panel-sub">Ordenadas por popularidad, distancia y terreno.</p>
+      <div id="progress" class="progress" hidden><span class="spinner"></span><span id="progress-text"></span></div>
+      <p id="notice" class="notice" hidden></p>
+      <ol id="route-list" class="route-list"></ol>
+      <p class="fineprint">
+        Popularidad estimada con datos abiertos de OpenStreetMap (rutas señalizadas, parques
+        y senderos conocidos, cerros e inicios de sendero). Trazado peatonal por OSRM y
+        altimetría del modelo Copernicus DEM (Open‑Meteo).
+      </p>
+    </aside>
+  </section>
+
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
