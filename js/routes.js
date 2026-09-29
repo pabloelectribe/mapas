@@ -230,7 +230,16 @@ export async function findRoutes({ origin, distanceKm, terrain, radiusKm, onProg
   let spots = [];
   let pending = 0;
   let done = 0;
-  const progress = () => onProgress(`Encontradas ${results.length} rutas · analizando ${pending - done} más…`);
+  let searchingOSM = true;
+  const progress = () => {
+    const found = results.length === 1 ? "1 ruta encontrada" : `${results.length} rutas encontradas`;
+    const left = pending - done;
+    onProgress(
+      searchingOSM ? `${found} · buscando senderos y parques conocidos…`
+      : left > 0 ? `${found} · analizando ${left} más…`
+      : `${found} · ordenando…`
+    );
+  };
   const emit = () => onUpdate(finalize(results, terrain, false).routes);
 
   async function measure(c) {
@@ -315,7 +324,7 @@ export async function findRoutes({ origin, distanceKm, terrain, radiusKm, onProg
   );
 
   // 2) Rutas y lugares de OpenStreetMap.
-  onProgress("Buscando parques, senderos y rutas conocidas…");
+  progress();
   let notice = null;
   const cacheKey = `${origin[0].toFixed(3)},${origin[1].toFixed(3)},${radiusKm},${distanceKm}`;
   let features = featureCache.get(cacheKey);
@@ -328,6 +337,8 @@ export async function findRoutes({ origin, distanceKm, terrain, radiusKm, onProg
       notice = "No pudimos consultar OpenStreetMap; te mostramos circuitos desde tu punto de partida.";
     }
   }
+  searchingOSM = false;
+  progress();
   const { curated, tracks } = features;
   spots = features.spots;
   const inRadius = spots.filter((s) => s.dist <= radiusM);

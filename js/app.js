@@ -153,6 +153,7 @@ let focusLayer; // ruta seleccionada (destacada)
 let userMovedMap = false;
 
 const ROUTE_COLOR = "#e9663a";
+const START_ICON = `<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3.5 2.2v7.6L10 6z"/></svg>`;
 const MUTED_COLOR = "#7c8594";
 
 function ensureMap() {
@@ -184,6 +185,16 @@ function ensureMap() {
     }),
   };
   simple.addTo(map);
+  const legend = L.control({ position: "bottomleft" });
+  legend.onAdd = () => {
+    const div = L.DomUtil.create("div", "map-legend");
+    div.innerHTML = `
+      <span><i class="start-pin is-start">${START_ICON}</i>Inicio</span>
+      <span><i class="km-pin">1<small>km</small></i>Kilómetro</span>
+      <span><i class="start-pin muted">2</i>Otras rutas</span>`;
+    return div;
+  };
+  legend.addTo(map);
   L.control.layers(baseLayers, null, { position: "topright" }).addTo(map);
   areaLayer = L.layerGroup().addTo(map);
   routeLayer = L.layerGroup().addTo(map);
@@ -264,12 +275,12 @@ function drawRoutes() {
   L.polyline(r.line, { color: ROUTE_COLOR, weight: 5.5, opacity: 1, interactive: false }).addTo(focusLayer);
   for (const m of kmMarkers(r)) {
     L.marker(m.at, {
-      icon: L.divIcon({ className: "km-pin", html: String(m.km), iconSize: [22, 22] }),
+      icon: L.divIcon({ className: "km-pin", html: `${m.km}<small>km</small>`, iconSize: [36, 18] }),
       keyboard: false, interactive: false,
     }).addTo(focusLayer);
   }
   L.marker(r.start, {
-    icon: L.divIcon({ className: "start-pin", html: String(i + 1), iconSize: [30, 30] }),
+    icon: L.divIcon({ className: "start-pin is-start", html: START_ICON, iconSize: [30, 30] }),
     keyboard: false, zIndexOffset: 1000, title: "Inicio",
   }).addTo(focusLayer);
 }

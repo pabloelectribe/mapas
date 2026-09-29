@@ -310,10 +310,24 @@ input[type="range"] { width: 100%; accent-color: var(--purple); height: 28px; }
 .me-dot::after { border: 3px solid #fff; }
 .start-pin.muted { background: #fff; color: #5b6472; border: 2px solid #9aa2ae; font-size: 11px; box-shadow: none; }
 .km-pin {
-  border-radius: 50%; display: grid; place-items: center;
-  background: #fff; color: var(--orange-2); border: 2px solid var(--orange-2);
-  font: 800 10px/1 var(--font);
+  display: inline-flex !important; align-items: baseline; justify-content: center; gap: 1px;
+  border-radius: 999px; background: #fff; color: var(--orange-2);
+  border: 1.5px solid var(--orange-2); box-shadow: 0 1px 3px rgba(0, 0, 0, .2);
+  font: 800 10px/15px var(--font); white-space: nowrap;
 }
+.km-pin small { font-size: 8px; font-weight: 700; }
+.start-pin.is-start svg { width: 12px; height: 12px; fill: #fff; margin-left: 2px; }
+.map-legend {
+  display: flex; gap: 12px; flex-wrap: wrap; align-items: center;
+  padding: 6px 10px; border-radius: 10px; background: rgba(255, 255, 255, .92);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .15); color: var(--ink); font: 600 11px/1 var(--font);
+}
+.map-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.map-legend i { position: static; display: inline-grid; place-items: center; font-style: normal; }
+.map-legend .start-pin { width: 18px; height: 18px; border-width: 2px; }
+.map-legend .start-pin.is-start svg { width: 8px; height: 8px; margin-left: 1px; }
+.map-legend .start-pin.muted { width: 18px; height: 18px; font-size: 9px; }
+.map-legend .km-pin { padding: 0 5px; }
 .start-pin {
   border-radius: 50%; display: grid; place-items: center;
   background: linear-gradient(160deg, var(--orange-1), var(--orange-2)); color: #fff;
