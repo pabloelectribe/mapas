@@ -58,7 +58,7 @@ export async function fetchRunningFeatures([lat, lon], radiusM, bbox) {
   relation["route"~"^(running|fitness_trail|foot|hiking)$"]${around};
   way["leisure"="track"]["sport"~"running|athletics"]${around};
 );
-out geom(${box}) 40;`;
+out geom(${box}) 120;`;
   const spotsQuery = `[out:json][timeout:25];
 (
   way["leisure"="park"]["name"]${around};

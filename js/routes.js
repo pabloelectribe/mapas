@@ -80,10 +80,14 @@ function parseFeatures(data, origin) {
         });
       }
     } else if (el.type === "way" && t.leisure === "track" && Array.isArray(el.geometry)) {
+      // Sólo pistas completas (anillo cerrado de ~200–1000 m), no tramos sueltos.
+      const ring = el.geometry.filter(Boolean).map((g) => [g.lat, g.lon]);
+      const len = lineLength(ring);
+      if (ring.length < 4 || haversine(ring[0], ring[ring.length - 1]) > 30 || len < 180 || len > 1000) continue;
       tracks.push({
         id: `trk-${el.id}`,
         name: t.name || "Pista atlética",
-        line: el.geometry.map((g) => [g.lat, g.lon]),
+        line: ring,
       });
     } else {
       const c = el.type === "node" ? [el.lat, el.lon] : el.center && [el.center.lat, el.center.lon];
