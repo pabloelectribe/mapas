@@ -87,7 +87,13 @@
 
   <!-- Pantalla 2: mapa + rutas -->
   <section id="results" class="screen results" hidden>
-    <div id="map" class="map" aria-label="Mapa de rutas"></div>
+    <div class="map-wrap">
+      <div id="map" class="map" aria-label="Mapa de rutas"></div>
+      <button id="search-here" class="search-here" type="button" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+        Buscar en esta zona
+      </button>
+    </div>
     <aside class="panel">
       <div class="panel-head">
         <button id="back" class="back" type="button" aria-label="Cambiar filtros">
@@ -102,9 +108,10 @@
       <p id="notice" class="notice" hidden></p>
       <ol id="route-list" class="route-list"></ol>
       <p class="fineprint">
-        Popularidad estimada con datos abiertos de OpenStreetMap (rutas señalizadas, parques
-        y senderos conocidos, cerros e inicios de sendero). Trazado peatonal por OSRM y
-        altimetría del modelo Copernicus DEM (Open‑Meteo).
+        <b>Popularidad</b> (🔥 1 a 4): estimada con OpenStreetMap. Suben las rutas de running o
+        senderos señalizados, las pistas atléticas, las que parten en parques destacados y las
+        que pasan por lugares conocidos. Trazado peatonal por OSRM y altimetría del modelo
+        Copernicus DEM (Open‑Meteo).
       </p>
     </aside>
   </section>

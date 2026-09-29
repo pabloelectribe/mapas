@@ -31,6 +31,10 @@ export async function overpass(query) {
   let lastError;
   for (const endpoint of OVERPASS) {
     try {
+      // Al proxy propio por GET, para que la respuesta quede en la caché del CDN.
+      if (endpoint.startsWith("/")) {
+        return await fetchJSON(`${endpoint}?data=${encodeURIComponent(query)}`, {}, 35000);
+      }
       return await fetchJSON(
         endpoint,
         {
@@ -38,7 +42,7 @@ export async function overpass(query) {
           body: "data=" + encodeURIComponent(query),
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
         },
-        40000
+        20000
       );
     } catch (e) {
       console.warn(`Overpass ${endpoint}:`, e.message);
@@ -51,8 +55,9 @@ export async function overpass(query) {
 // Lugares y rutas relevantes para trotar dentro del radio, en dos consultas
 // livianas: si una falla, la otra igual aporta candidatos.
 export async function fetchRunningFeatures([lat, lon], radiusM, bbox) {
-  const around = `(around:${Math.round(radiusM)},${lat.toFixed(5)},${lon.toFixed(5)})`;
-  const box = bbox.map((v) => v.toFixed(4)).join(",");
+  // Coordenadas redondeadas (~100 m) para que búsquedas cercanas reutilicen la caché.
+  const around = `(around:${Math.round(radiusM)},${lat.toFixed(3)},${lon.toFixed(3)})`;
+  const box = bbox.map((v) => v.toFixed(3)).join(",");
   const routesQuery = `[out:json][timeout:25];
 (
   relation["route"~"^(running|fitness_trail|foot|hiking)$"]${around};

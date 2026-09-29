@@ -7,7 +7,12 @@ Webapp sencilla para encontrar las mejores rutas para trotar cerca de ti.
    falsos planos o con altimetría) y el **radio de búsqueda** (1–25 km).
 3. Muestra en el mapa las rutas recomendadas, ordenadas por popularidad, ajuste a la
    distancia y terreno, con perfil de elevación, dificultad, descarga **GPX**
-   (para Strava, Garmin, etc.) y botón "Llévame ahí" que abre la ruta en Google Maps a pie.
+   (Strava, Komoot…), **curso para Garmin (.fit)** listo para Garmin Connect o para copiar
+   al reloj (`GARMIN/NewFiles`), y botón "Llévame ahí" que abre la ruta en Google Maps a pie.
+4. Si mueves el mapa aparece **"Buscar en esta zona"** para repetir la búsqueda ahí.
+
+Los resultados aparecen a medida que se calculan: los circuitos desde tu punto de partida
+se trazan en paralelo con la consulta a OpenStreetMap.
 
 ## Cómo funciona
 
@@ -19,7 +24,7 @@ Todo usa servicios abiertos y gratuitos, sin claves de API:
 | Trazado de circuitos por calles, parques y senderos | OSRM, perfil peatonal (routing.openstreetmap.de) |
 | Altimetría (desnivel y perfil) | Open‑Meteo Elevation (Copernicus DEM 90 m) |
 | Búsqueda de lugares | Nominatim |
-| Mapa base (Mapa / Relieve / Satélite) | OpenStreetMap, OpenTopoMap, Esri World Imagery |
+| Mapa base (Simple / Calles / Relieve / Satélite) | Esri Light Gray Canvas, OpenStreetMap, OpenTopoMap, Esri World Imagery |
 
 **Candidatos:** rutas señalizadas de OSM (completas, tramo ida y vuelta o N vueltas según
 la distancia), pistas atléticas (hasta 10 km), circuitos generados desde tu ubicación y
@@ -30,6 +35,9 @@ e inicios de sendero.
 planos, `≥ 25 m/km` con altimetría.
 
 **Puntaje:** `45 % popularidad + 30 % ajuste a la distancia + 25 % ajuste al terreno`.
+
+**Popularidad (🔥 1 a 4)**: Muy popular (≥ 85), Popular (≥ 65), Conocida (≥ 45) y Poco
+transitada, con los motivos a la vista (ruta señalizada, parque destacado, pasa por…).
 
 > **Sobre la popularidad:** Strava no ofrece públicamente su mapa de calor ni sus
 > rutas por API, así que la popularidad se estima con OpenStreetMap: rutas de running
@@ -60,6 +68,7 @@ js/app.js           Interfaz, mapa (Leaflet), geolocalización, GPX
 js/routes.js        Motor de recomendación: candidatos, altimetría, puntaje
 js/services.js      Clientes de Overpass, OSRM, Open‑Meteo y Nominatim
 js/geo.js           Utilidades geográficas
+js/export.js        Exportación GPX y curso FIT para Garmin
 api/overpass.js     Función de Vercel: proxy de Overpass con caché
 vendor/leaflet/     Leaflet 1.9.4 (BSD‑2)
 ```

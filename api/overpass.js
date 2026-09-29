@@ -30,7 +30,7 @@ async function handle(request) {
           "Content-Type": "application/x-www-form-urlencoded",
           "User-Agent": "Trota/1.0 (https://trota-mapas.vercel.app)",
         },
-        signal: AbortSignal.timeout(25000),
+        signal: AbortSignal.timeout(15000),
       });
       const text = await res.text();
       if (!res.ok || !text.trimStart().startsWith("{")) {

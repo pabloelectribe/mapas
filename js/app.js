@@ -1,6 +1,7 @@
-import { findRoutes, TERRAINS } from "./routes.js";
+import { findRoutes, TERRAINS, popularityLevel } from "./routes.js";
 import { searchPlace, reverseName } from "./services.js";
 import { toGPX, sampleEvenly } from "./geo.js";
+import { trackPoints, toFITCourse } from "./export.js";
 
 const $ = (s) => document.querySelector(s);
 const STORE_KEY = "trota:filters";
@@ -146,67 +147,131 @@ document.addEventListener("click", (e) => {
 
 // ---------- Mapa ----------
 let map;
-let layers;
-let baseLayers;
-const lines = new Map();
+let areaLayer; // radio de búsqueda y punto de partida
+let routeLayer; // resto de rutas (discretas)
+let focusLayer; // ruta seleccionada (destacada)
+let userMovedMap = false;
+
+const ROUTE_COLOR = "#e9663a";
+const MUTED_COLOR = "#7c8594";
 
 function ensureMap() {
   if (map) return;
   map = L.map("map", { zoomControl: false, attributionControl: true });
   L.control.zoom({ position: "bottomright" }).addTo(map);
+  map.attributionControl.setPrefix('<a href="https://leafletjs.com">Leaflet</a>');
   const osm = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
-  baseLayers = {
-    Mapa: L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 19,
-      attribution: osm,
+  const esri = "https://server.arcgisonline.com/ArcGIS/rest/services";
+  // "Simple": fondo gris claro con pocas etiquetas, para que destaque el circuito.
+  const simple = L.layerGroup([
+    L.tileLayer(`${esri}/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}`, {
+      maxZoom: 19, maxNativeZoom: 16,
+      attribution: `Mapa base &copy; Esri, HERE, Garmin, ${osm}`,
     }),
+    L.tileLayer(`${esri}/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}`, {
+      maxZoom: 19, maxNativeZoom: 16,
+    }),
+  ]);
+  const baseLayers = {
+    Simple: simple,
+    Calles: L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: osm }),
     Relieve: L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", {
-      maxZoom: 17,
-      subdomains: "abc",
+      maxZoom: 17, subdomains: "abc",
       attribution: `${osm}, SRTM | &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)`,
     }),
-    "Satélite": L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
-      maxZoom: 19,
-      attribution: "Imágenes &copy; Esri, Maxar, Earthstar Geographics",
+    "Satélite": L.tileLayer(`${esri}/World_Imagery/MapServer/tile/{z}/{y}/{x}`, {
+      maxZoom: 19, attribution: "Imágenes &copy; Esri, Maxar, Earthstar Geographics",
     }),
   };
+  simple.addTo(map);
   L.control.layers(baseLayers, null, { position: "topright" }).addTo(map);
-  layers = L.layerGroup().addTo(map);
+  areaLayer = L.layerGroup().addTo(map);
+  routeLayer = L.layerGroup().addTo(map);
+  focusLayer = L.layerGroup().addTo(map);
+
+  // "Buscar en esta zona" aparece sólo cuando la persona mueve el mapa.
+  let interacting = false;
+  const el = map.getContainer();
+  ["pointerdown", "wheel", "touchstart"].forEach((ev) =>
+    el.addEventListener(ev, (e) => {
+      if (!e.target.closest(".leaflet-control")) interacting = true;
+    }, { passive: true })
+  );
+  map.on("moveend", () => {
+    if (!interacting) return;
+    interacting = false;
+    userMovedMap = true;
+    const c = map.getCenter();
+    const far = state.origin && map.distance(c, L.latLng(state.origin)) > 300;
+    $("#search-here").hidden = !far;
+  });
 }
 
-function drawBase() {
-  const wanted = state.terrain === "hilly" ? "Relieve" : "Mapa";
-  for (const [name, layer] of Object.entries(baseLayers)) {
-    if (name === wanted) layer.addTo(map);
-    else map.removeLayer(layer);
-  }
-  layers.clearLayers();
-  lines.clear();
+function drawArea() {
+  areaLayer.clearLayers();
   L.circle(state.origin, {
     radius: state.radius * 1000,
-    color: "#7b45e8", weight: 1.5, dashArray: "6 6", fillColor: "#7b45e8", fillOpacity: 0.06,
+    color: "#7b45e8", weight: 1.5, opacity: 0.6, dashArray: "4 6", fill: false,
     interactive: false,
-  }).addTo(layers);
+  }).addTo(areaLayer);
   L.marker(state.origin, {
-    icon: L.divIcon({ className: "me-dot", iconSize: [16, 16] }),
+    icon: L.divIcon({ className: "me-dot", iconSize: [14, 14] }),
     title: "Punto de partida",
     keyboard: false,
-  }).addTo(layers);
-  map.fitBounds(L.latLng(state.origin).toBounds(state.radius * 2000), { padding: [20, 20] });
+    interactive: false,
+  }).addTo(areaLayer);
+}
+
+// Marcadores de kilómetro a lo largo de la ruta seleccionada (una vuelta).
+function kmMarkers(r) {
+  const total = r.onePass;
+  const step = total <= 12000 ? 1000 : total <= 25000 ? 2000 : 5000;
+  const out = [];
+  let acc = 0;
+  let next = step;
+  for (let i = 1; i < r.line.length && next < total - step / 3; i++) {
+    const a = r.line[i - 1];
+    const b = r.line[i];
+    const seg = L.latLng(a).distanceTo(L.latLng(b));
+    while (seg > 0 && acc + seg >= next && next < total - step / 3) {
+      const f = (next - acc) / seg;
+      out.push({ km: next / 1000, at: [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f] });
+      next += step;
+    }
+    acc += seg;
+  }
+  return out;
 }
 
 function drawRoutes() {
+  routeLayer.clearLayers();
+  focusLayer.clearLayers();
   state.routes.forEach((r, i) => {
-    const line = L.polyline(r.line, { color: "#7b45e8", weight: 4, opacity: 0.45 }).addTo(layers);
-    line.on("click", () => selectRoute(r.id, true));
-    line.bindTooltip(`#${i + 1} ${r.name}`, { sticky: true });
-    const pin = L.marker(r.start, {
-      icon: L.divIcon({ className: "start-pin", html: String(i + 1), iconSize: [26, 26] }),
+    if (r.id === state.selected) return;
+    const line = L.polyline(r.line, { color: MUTED_COLOR, weight: 3, opacity: 0.55 }).addTo(routeLayer);
+    line.on("click", () => selectRoute(r.id, { fromMap: true }));
+    line.bindTooltip(`${i + 1}. ${r.name}`, { sticky: true });
+    L.marker(r.start, {
+      icon: L.divIcon({ className: "start-pin muted", html: String(i + 1), iconSize: [22, 22] }),
       keyboard: false,
-    }).addTo(layers);
-    pin.on("click", () => selectRoute(r.id, true));
-    lines.set(r.id, line);
+    }).on("click", () => selectRoute(r.id, { fromMap: true })).addTo(routeLayer);
   });
+
+  const i = state.routes.findIndex((r) => r.id === state.selected);
+  if (i < 0) return;
+  const r = state.routes[i];
+  L.polyline(r.line, { color: "#fff", weight: 11, opacity: 0.95, interactive: false }).addTo(focusLayer);
+  L.polyline(r.line, { color: ROUTE_COLOR, weight: 5.5, opacity: 1, interactive: false }).addTo(focusLayer);
+  for (const m of kmMarkers(r)) {
+    L.marker(m.at, {
+      icon: L.divIcon({ className: "km-pin", html: String(m.km), iconSize: [22, 22] }),
+      keyboard: false, interactive: false,
+    }).addTo(focusLayer);
+  }
+  L.marker(r.start, {
+    icon: L.divIcon({ className: "start-pin", html: String(i + 1), iconSize: [30, 30] }),
+    keyboard: false, zIndexOffset: 1000, title: "Inicio",
+  }).addTo(focusLayer);
 }
 
 // ---------- Resultados ----------
@@ -241,16 +306,30 @@ function escapeHTML(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 }
 
-function renderList() {
+const FLAME = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8.6 1.2c.3 2-.9 3.1-2 4.3C5.5 6.7 4.3 8 4.3 10a3.7 3.7 0 0 0 7.4 0c0-1.3-.5-2.3-1.1-3.1-.1.9-.6 1.6-1.3 1.9.4-2.6-.2-5.6-2.7-7.6Z"/></svg>`;
+
+function popularityHTML(r) {
+  const lvl = popularityLevel(r.popularity);
+  const flames = [1, 2, 3, 4].map((n) => `<i class="${n <= lvl.level ? "on" : ""}">${FLAME}</i>`).join("");
+  const why = (r.reasons || []).map(escapeHTML).join(" · ");
+  return `<div class="pop lvl-${lvl.level}" title="Popularidad ${r.popularity}/100 estimada con OpenStreetMap">
+      <span class="flames" aria-hidden="true">${flames}</span><b>${lvl.label}</b>
+    </div>
+    ${why ? `<p class="why">${why}</p>` : ""}`;
+}
+
+function renderList(loading) {
   const list = $("#route-list");
   list.innerHTML = "";
   if (!state.routes.length) {
-    list.innerHTML = `<li class="empty">No encontramos rutas de ${state.distance} km en este radio. Prueba ampliando el radio o cambiando la distancia.</li>`;
+    if (!loading) {
+      list.innerHTML = `<li class="empty">No encontramos rutas de ${state.distance} km en este radio. Prueba ampliando el radio o cambiando la distancia.</li>`;
+    }
     return;
   }
   state.routes.forEach((r, i) => {
     const li = document.createElement("li");
-    li.className = "route";
+    li.className = "route" + (r.id === state.selected ? " selected" : "");
     li.dataset.id = r.id;
     li.tabIndex = 0;
     const terrain = r.terrain
@@ -265,49 +344,69 @@ function renderList() {
         <div class="stats">
           <span><b>${fmtKm(r.distance)}</b> km</span>${gain}${terrain}<span>${r.difficulty.label}</span>
         </div>
-        <div class="pop"><span>Popularidad</span><div class="bar"><i style="width:${r.popularity}%"></i></div><span>${r.popularity}</span></div>
+        ${popularityHTML(r)}
         <div class="detail">
           ${r.elev ? profileSVG(r.elev) : ""}
           <div class="actions">
-            <button type="button" data-act="gpx">Descargar GPX</button>
-            <a class="primary" href="${mapsLink(r)}" target="_blank" rel="noopener">Llévame ahí</a>
+            <button type="button" data-act="gpx">⬇ GPX</button>
+            <button type="button" data-act="fit">⬇ Garmin (.fit)</button>
           </div>
+          <div class="garmin-help" hidden>
+            <b>Listo: se descargó el curso para Garmin (.fit).</b>
+            <ol>
+              <li><b>Con Garmin Connect:</b> Entrenamiento y planificación → Recorridos → Importar → elige el archivo → Guardar → Enviar al dispositivo.</li>
+              <li><b>Por cable:</b> copia el archivo a la carpeta <code>GARMIN/NewFiles</code> del reloj.</li>
+              <li>En el reloj: Correr → Navegación → Recorridos → <i>${escapeHTML(r.name)}</i>.</li>
+            </ol>
+          </div>
+          <a class="go" href="${mapsLink(r)}" target="_blank" rel="noopener">Llévame ahí</a>
         </div>
       </div>`;
     li.addEventListener("click", (e) => {
       if (e.target.closest("[data-act=gpx]")) return downloadGPX(r);
-      if (e.target.closest("a")) return;
-      selectRoute(r.id, false);
+      if (e.target.closest("[data-act=fit]")) {
+        downloadFIT(r);
+        li.querySelector(".garmin-help").hidden = false;
+        return;
+      }
+      if (e.target.closest("a, .garmin-help")) return;
+      selectRoute(r.id, { user: true });
     });
     li.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectRoute(r.id, false); }
+      if (e.target === li && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); selectRoute(r.id, { user: true }); }
     });
     list.appendChild(li);
   });
 }
 
-function selectRoute(id, fromMap) {
+function selectRoute(id, { fromMap = false, user = false, fit = true } = {}) {
+  if (fromMap || user) state.userSelected = true;
   state.selected = id;
-  for (const [rid, line] of lines) {
-    const on = rid === id;
-    line.setStyle(on ? { color: "#e9663a", weight: 6, opacity: 1 } : { color: "#7b45e8", weight: 4, opacity: 0.35 });
-    if (on) line.bringToFront();
-  }
+  drawRoutes();
   document.querySelectorAll(".route").forEach((el) => el.classList.toggle("selected", el.dataset.id === id));
   const r = state.routes.find((x) => x.id === id);
-  if (r) map.fitBounds(L.latLngBounds(r.line), { padding: [40, 40], maxZoom: 16 });
+  if (r && fit) map.fitBounds(L.latLngBounds(r.line), { padding: [40, 40], maxZoom: 16 });
   if (fromMap) document.querySelector(`.route[data-id="${id}"]`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
-function downloadGPX(r) {
-  const elev = r.elev && r.samples.length === r.elev.length ? r.elev : null;
-  const gpx = toGPX(r.name, elev ? r.samples : r.line, elev);
-  const blob = new Blob([gpx], { type: "application/gpx+xml" });
+const fileName = (r, ext) => `${r.name.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "").toLowerCase() || "ruta"}.${ext}`;
+
+function saveFile(data, name, type) {
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = `${r.name.replace(/[^\p{L}\p{N}]+/gu, "-").toLowerCase()}.gpx`;
+  a.href = URL.createObjectURL(new Blob([data], { type }));
+  a.download = name;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function downloadGPX(r) {
+  const pts = trackPoints(r);
+  saveFile(toGPX(r.name, pts.map((p) => [p.lat, p.lon]), pts.map((p) => p.ele)), fileName(r, "gpx"), "application/gpx+xml");
+}
+
+function downloadFIT(r) {
+  const fit = toFITCourse(r.name, trackPoints(r), { gain: r.gain || 0, loss: r.loss || 0 });
+  saveFile(fit, fileName(r, "fit"), "application/vnd.ant.fit");
 }
 
 // ---------- Navegación ----------
@@ -326,23 +425,48 @@ $("#back").addEventListener("click", () => {
   document.body.classList.add("on-start");
 });
 
+$("#search-here").addEventListener("click", () => {
+  const c = map.getCenter();
+  state.origin = [c.lat, c.lng];
+  state.originLabel = "zona del mapa";
+  locBtn.classList.remove("active");
+  placeInput.value = "";
+  locStatus.textContent = "✓ Partida: zona elegida en el mapa";
+  locStatus.className = "loc-status ok";
+  search({ keepView: true });
+});
+
 let runId = 0;
-$("#go").addEventListener("click", async () => {
+async function search({ keepView = false } = {}) {
   if (!state.origin) return;
   const id = ++runId;
   showResults();
+  $("#search-here").hidden = true;
   $("#summary").innerHTML = `
     <span class="pill blue">${state.distance} km</span>
     <span class="pill purple">${TERRAINS[state.terrain].label}</span>
     <span class="pill green">Radio ${state.radius} km</span>`;
   state.routes = [];
   state.selected = null;
-  $("#route-list").innerHTML = "";
+  state.userSelected = false;
+  userMovedMap = false;
   $("#notice").hidden = true;
-  drawBase();
+  renderList(true);
+  drawArea();
+  drawRoutes();
+  if (!keepView) map.fitBounds(L.latLng(state.origin).toBounds(state.radius * 2000), { padding: [20, 20] });
 
   const progress = $("#progress");
   progress.hidden = false;
+  $("#progress-text").textContent = "Buscando rutas…";
+  const apply = (routes, final) => {
+    state.routes = routes;
+    if (!state.userSelected || !routes.some((r) => r.id === state.selected)) {
+      state.selected = routes[0]?.id ?? null;
+    }
+    renderList(!final);
+    drawRoutes();
+  };
   try {
     const res = await findRoutes({
       origin: state.origin,
@@ -350,16 +474,15 @@ $("#go").addEventListener("click", async () => {
       terrain: state.terrain,
       radiusKm: state.radius,
       onProgress: (t) => { if (id === runId) $("#progress-text").textContent = t; },
+      onUpdate: (routes) => { if (id === runId) apply(routes, false); },
     });
     if (id !== runId) return;
-    state.routes = res.routes;
+    apply(res.routes, true);
     if (res.notice) {
       $("#notice").textContent = res.notice;
       $("#notice").hidden = false;
     }
-    renderList();
-    drawRoutes();
-    if (state.routes.length) selectRoute(state.routes[0].id, false);
+    if (state.selected && !state.userSelected && !userMovedMap) selectRoute(state.selected);
   } catch (e) {
     if (id !== runId) return;
     $("#notice").textContent = "Los servicios de mapas no respondieron. Revisa tu conexión e inténtalo de nuevo.";
@@ -367,4 +490,6 @@ $("#go").addEventListener("click", async () => {
   } finally {
     if (id === runId) progress.hidden = true;
   }
-});
+}
+
+$("#go").addEventListener("click", () => search());

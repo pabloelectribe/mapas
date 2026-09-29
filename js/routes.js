@@ -104,6 +104,7 @@ function parseFeatures(data, origin) {
         center: c,
         ele: t.ele ? parseFloat(t.ele) : null,
         popularity: spotPopularity(t, kind),
+        notable: Boolean(t.wikidata || t.wikipedia),
         dist: haversine(origin, c),
       });
     }
@@ -112,8 +113,9 @@ function parseFeatures(data, origin) {
 }
 
 // Circuito aproximadamente circular desde `start` que se aleja en dirección `brg`.
+// Un segundo intento sólo si el primero se desvía mucho de la distancia pedida.
 async function buildLoop(start, brg, targetM) {
-  let r = targetM / (2 * Math.PI) / 1.2; // las calles alargan ~20 % el círculo ideal
+  let r = targetM / (2 * Math.PI) / 1.25; // las calles alargan ~25 % el círculo ideal
   let best = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     const c = destination(start, brg, r);
@@ -121,34 +123,51 @@ async function buildLoop(start, brg, targetM) {
     const route = await routeFoot(wps);
     if (!best || Math.abs(route.distance - targetM) < Math.abs(best.distance - targetM)) best = route;
     const ratio = route.distance / targetM;
-    if (ratio > 0.9 && ratio < 1.1) break;
+    if (ratio > 0.8 && ratio < 1.25) break;
     r *= clamp(1 / ratio, 0.4, 2.5);
   }
   return best;
 }
 
-async function pool(items, limit, fn) {
-  const results = new Array(items.length);
-  let next = 0;
-  const worker = async () => {
-    while (next < items.length) {
-      const i = next++;
-      try { results[i] = await fn(items[i], i); } catch (e) { results[i] = null; }
-    }
+// Limita cuántas tareas corren a la vez contra un mismo servicio.
+function limiter(max) {
+  let active = 0;
+  const queue = [];
+  const next = () => {
+    if (active >= max || !queue.length) return;
+    active++;
+    const { fn, resolve, reject } = queue.shift();
+    fn().then(resolve, reject).finally(() => { active--; next(); });
   };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return results;
+  return (fn) => new Promise((resolve, reject) => { queue.push({ fn, resolve, reject }); next(); });
 }
 
-function passBonus(line, spots, excludeId) {
+// Lugares conocidos por los que pasa la ruta (además del de partida).
+function placesPassed(line, spots, exclude) {
   const pts = sampleEvenly(line, 40);
-  let n = 0;
-  for (const s of spots) {
-    if (s.id === excludeId) continue;
-    if (pts.some((p) => haversine(p, s.center) < 200)) n++;
-  }
-  return Math.min(20, n * 6);
+  const seen = new Set(exclude ? [exclude.name] : []);
+  return spots.filter((s) => {
+    if (s.kind === "trailhead" || seen.has(s.name)) return false;
+    if (!pts.some((p) => haversine(p, s.center) < 200)) return false;
+    seen.add(s.name);
+    return true;
+  });
 }
+
+export const POPULARITY_LEVELS = [
+  { min: 85, label: "Muy popular", level: 4 },
+  { min: 65, label: "Popular", level: 3 },
+  { min: 45, label: "Conocida", level: 2 },
+  { min: 0, label: "Poco transitada", level: 1 },
+];
+export const popularityLevel = (score) => POPULARITY_LEVELS.find((l) => score >= l.min);
+
+const ROUTE_KIND = {
+  running: "Ruta de running señalizada",
+  fitness_trail: "Circuito deportivo señalizado",
+  foot: "Ruta peatonal señalizada",
+  hiking: "Sendero de trekking señalizado",
+};
 
 // Adapta una ruta señalizada a la distancia pedida: completa, ida y vuelta o vueltas.
 function fitCurated(route, targetM, origin) {
@@ -170,7 +189,33 @@ function fitCurated(route, targetM, origin) {
   return null;
 }
 
-export async function findRoutes({ origin, distanceKm, terrain, radiusKm, onProgress = () => {} }) {
+const fitsDistance = (c, targetM) => {
+  const d = lineLength(c.line) * c.laps;
+  return d >= targetM * 0.7 && d <= targetM * 1.35;
+};
+
+// Ordena, quita duplicados y aplica el filtro de terreno.
+function finalize(results, terrain, final) {
+  const sorted = results.slice().sort((a, b) => b.score - a.score);
+  const unique = [];
+  for (const r of sorted) {
+    const dup = unique.some(
+      (u) =>
+        haversine(u.start, r.start) < 200 &&
+        Math.abs(u.distance - r.distance) / r.distance < 0.06 &&
+        Math.abs((u.gain || 0) - (r.gain || 0)) < 15
+    );
+    if (!dup) unique.push(r);
+  }
+  const matching = unique.filter((r) => r.terrain === terrain);
+  if (matching.length) return { routes: matching.slice(0, 8), fallback: false };
+  return { routes: final ? unique.slice(0, 8) : [], fallback: unique.length > 0 };
+}
+
+// Caché en memoria de lo consultado a Overpass (cambiar sólo distancia o terreno no repite la consulta).
+const featureCache = new Map();
+
+export async function findRoutes({ origin, distanceKm, terrain, radiusKm, onProgress = () => {}, onUpdate = () => {} }) {
   const targetM = distanceKm * 1000;
   const radiusM = radiusKm * 1000;
   const reach = radiusM + Math.min(targetM / 2, 10000);
@@ -178,25 +223,124 @@ export async function findRoutes({ origin, distanceKm, terrain, radiusKm, onProg
     destination(origin, 180, reach)[0], destination(origin, 270, reach)[1],
     destination(origin, 0, reach)[0], destination(origin, 90, reach)[1],
   ];
+  const osrm = limiter(4);
+  const elevation = limiter(4);
+  const wantIdx = TERRAIN_ORDER.indexOf(terrain);
+  const results = [];
+  let spots = [];
+  let pending = 0;
+  let done = 0;
+  const progress = () => onProgress(`Encontradas ${results.length} rutas · analizando ${pending - done} más…`);
+  const emit = () => onUpdate(finalize(results, terrain, false).routes);
 
-  onProgress("Buscando parques, senderos y rutas conocidas…");
-  let features = { curated: [], tracks: [], spots: [] };
-  let notice = null;
-  try {
-    features = parseFeatures(await fetchRunningFeatures(origin, radiusM, bbox), origin);
-  } catch (e) {
-    notice = "No pudimos consultar OpenStreetMap; te mostramos circuitos desde tu ubicación.";
+  async function measure(c) {
+    const onePass = lineLength(c.line);
+    const n = clamp(Math.round(onePass / 80), 20, 80);
+    const samples = sampleEvenly(c.line, n);
+    let elev = null;
+    try { elev = await elevation(() => elevations(samples)); } catch { /* sin altimetría */ }
+    const st = elev ? elevationStats(elev) : null;
+    const distance = onePass * c.laps;
+    const km = distance / 1000;
+    const gain = st ? st.gain * c.laps : null;
+    const t = gain == null ? null : classifyTerrain(gain / km);
+    const terrainMatch = t == null ? 50 : [100, 40, 0][Math.abs(TERRAIN_ORDER.indexOf(t) - wantIdx)];
+    const distMatch = clamp(100 - (Math.abs(distance - targetM) / targetM) * 200, 0, 100);
+    results.push({
+      ...c,
+      samples, elev, onePass, distance, gain,
+      loss: st ? st.loss * c.laps : null,
+      gainPerKm: gain == null ? null : gain / km,
+      terrain: t,
+      difficulty: difficultyOf(km, gain || 0),
+      score: Math.round(0.45 * c.popularity + 0.3 * distMatch + 0.25 * terrainMatch),
+      start: c.line[0],
+    });
+    emit();
   }
-  const { curated, tracks, spots } = features;
 
-  const candidates = [];
+  // Cada candidato corre en paralelo y aparece en pantalla apenas está listo.
+  const jobs = [];
+  const run = (fn) => {
+    pending++;
+    progress();
+    jobs.push(fn().catch(() => null).finally(() => { done++; progress(); }));
+  };
+  const addCandidate = (c) => { if (fitsDistance(c, targetM)) run(() => measure(c)); };
+
+  const loopJob = (task) => async () => {
+    let result;
+    if (task.type === "summit") {
+      const p = task.peak;
+      // Partida en dirección a tu ubicación, a la distancia que da la ida y vuelta pedida.
+      const back = targetM / 2 / 1.25;
+      const start = destination(p.center, p.dist > 50 ? bearing(p.center, origin) : 180, back);
+      result = await osrm(() => routeFoot([start, p.center, start]));
+    } else {
+      result = await osrm(() => buildLoop(task.start, task.brg, targetM));
+    }
+    const passed = placesPassed(result.coords, spots, task.from ?? task.peak);
+    const via = result.streets.filter((n) => !task.from || n !== task.from.name).slice(0, 2);
+    const reasons = [];
+    let name;
+    let subtitle;
+    if (task.type === "summit") {
+      name = `Subida a ${task.peak.name}`;
+      subtitle = "Cerro · ida y vuelta";
+      reasons.push(`Cumbre conocida${task.peak.notable ? " y destacada" : ""}`);
+    } else if (task.from) {
+      name = `Circuito ${task.from.name}`;
+      subtitle = via.length ? `Por ${via.join(" y ")}` : "Circuito";
+      reasons.push(
+        task.from.kind === "trailhead" ? "Parte en un inicio de sendero"
+        : `Parte en ${task.from.kind === "reserve" ? "una reserva" : "un parque"}${task.from.notable ? " destacado" : ""}`
+      );
+    } else {
+      name = `Circuito ${compassName(((task.brg % 360) + 360) % 360)}`;
+      subtitle = via.length ? `Desde tu punto de partida · por ${via.join(" y ")}` : "Desde tu punto de partida";
+      reasons.push("Circuito trazado por calles y senderos");
+    }
+    if (passed.length) reasons.push(`Pasa por ${passed.slice(0, 2).map((s) => s.name).join(" y ")}`);
+    addCandidate({
+      id: `osrm-${task.key}`,
+      source: task.type === "summit" ? "summit" : "loop",
+      name, subtitle, reasons, line: result.coords, laps: 1,
+      popularity: clamp(task.popularity + Math.min(20, passed.length * 6), 0, 92),
+    });
+  };
+
+  // 1) Circuitos desde el punto de partida: no dependen de OpenStreetMap, parten de inmediato.
+  [0, 120, 240].forEach((brg, i) =>
+    run(loopJob({ key: `o${i}`, type: "loop", start: origin, brg, popularity: 35, from: null }))
+  );
+
+  // 2) Rutas y lugares de OpenStreetMap.
+  onProgress("Buscando parques, senderos y rutas conocidas…");
+  let notice = null;
+  const cacheKey = `${origin[0].toFixed(3)},${origin[1].toFixed(3)},${radiusKm},${distanceKm}`;
+  let features = featureCache.get(cacheKey);
+  if (!features) {
+    try {
+      features = parseFeatures(await fetchRunningFeatures(origin, radiusM, bbox), origin);
+      featureCache.set(cacheKey, features);
+    } catch (e) {
+      features = { curated: [], tracks: [], spots: [] };
+      notice = "No pudimos consultar OpenStreetMap; te mostramos circuitos desde tu punto de partida.";
+    }
+  }
+  const { curated, tracks } = features;
+  spots = features.spots;
+  const inRadius = spots.filter((s) => s.dist <= radiusM);
 
   for (const c of curated) {
     const fit = fitCurated(c, targetM, origin);
     if (!fit) continue;
-    candidates.push({
-      id: c.id, source: "curated", name: c.name, subtitle: `Ruta señalizada · ${fit.suffix}`,
-      line: fit.line, laps: fit.laps, popularity: c.popularity,
+    const passed = placesPassed(fit.line, spots, c);
+    const reasons = [ROUTE_KIND[c.kind]];
+    if (passed.length) reasons.push(`Pasa por ${passed.slice(0, 2).map((s) => s.name).join(" y ")}`);
+    addCandidate({
+      id: c.id, source: "curated", name: c.name, subtitle: fit.suffix[0].toUpperCase() + fit.suffix.slice(1),
+      reasons, line: fit.line, laps: fit.laps, popularity: c.popularity,
     });
   }
 
@@ -208,136 +352,41 @@ export async function findRoutes({ origin, distanceKm, terrain, radiusKm, onProg
       .slice(0, 2)
       .forEach((t) => {
         const laps = Math.max(1, Math.round(targetM / lineLength(t.line)));
-        candidates.push({
+        addCandidate({
           id: t.id, source: "track", name: t.name, subtitle: `Pista · ${laps} vueltas`,
-          line: t.line, laps, popularity: 70,
+          reasons: ["Pista atlética: plana, medida y sin tráfico"], line: t.line, laps, popularity: 70,
         });
       });
   }
 
-  // Tareas de trazado con el ruteador peatonal.
-  const inRadius = spots.filter((s) => s.dist <= radiusM);
   const green = inRadius
     .filter((s) => s.kind === "park" || s.kind === "reserve")
     .sort((a, b) => b.popularity - a.popularity || a.dist - b.dist);
-  const tasks = [];
-  const firstBrg = green.length ? bearing(origin, green[0].center) : 0;
-  [0, 120, 240].forEach((off) =>
-    tasks.push({ type: "loop", start: origin, brg: firstBrg + off, popularity: 35, from: null })
-  );
-  for (const s of green.slice(0, 4)) {
-    tasks.push({
-      type: "loop", start: s.center, brg: s.dist > 50 ? bearing(origin, s.center) : 90,
+  green.slice(0, 4).forEach((s) =>
+    run(loopJob({
+      key: s.id, type: "loop", start: s.center, brg: s.dist > 50 ? bearing(origin, s.center) : 90,
       popularity: s.popularity, from: s,
-    });
-  }
+    }))
+  );
   if (terrain !== "flat") {
     const peaks = inRadius.filter((s) => s.kind === "peak").sort((a, b) => a.dist - b.dist);
-    for (const p of peaks.slice(0, terrain === "hilly" ? 3 : 1)) {
-      tasks.push({ type: "summit", peak: p, popularity: p.popularity });
-    }
-    const heads = inRadius.filter((s) => s.kind === "trailhead").sort((a, b) => a.dist - b.dist);
-    for (const h of heads.slice(0, terrain === "hilly" ? 2 : 1)) {
-      tasks.push({ type: "loop", start: h.center, brg: bearing(origin, h.center), popularity: h.popularity, from: h });
-    }
-  }
-
-  let done = 0;
-  onProgress(`Trazando ${tasks.length} circuitos por calles y senderos…`);
-  const traced = await pool(tasks, 2, async (task) => {
-    let result;
-    if (task.type === "summit") {
-      const p = task.peak;
-      // Partida en dirección a tu ubicación, a la distancia que da la ida y vuelta pedida.
-      const back = targetM / 2 / 1.25;
-      const start = destination(p.center, p.dist > 50 ? bearing(p.center, origin) : 180, back);
-      result = await routeFoot([start, p.center, start]);
-    } else {
-      result = await buildLoop(task.start, task.brg, targetM);
-    }
-    onProgress(`Trazando circuitos… ${++done}/${tasks.length}`);
-    return { task, result };
-  });
-
-  for (const t of traced) {
-    if (!t || !t.result) continue;
-    const { task, result } = t;
-    const via = result.streets.filter((n) => !task.from || n !== task.from.name).slice(0, 2);
-    let name;
-    let subtitle;
-    if (task.type === "summit") {
-      name = `Subida a ${task.peak.name}`;
-      subtitle = "Cerro · ida y vuelta";
-    } else if (task.from) {
-      name = `Circuito ${task.from.name}`;
-      subtitle = via.length ? `Por ${via.join(" y ")}` : "Circuito";
-    } else {
-      name = `Circuito ${compassName(((task.brg % 360) + 360) % 360)}`;
-      subtitle = via.length ? `Desde tu ubicación · por ${via.join(" y ")}` : "Desde tu ubicación";
-    }
-    candidates.push({
-      id: `osrm-${candidates.length}`,
-      source: task.type === "summit" ? "summit" : "loop",
-      name, subtitle, line: result.coords, laps: 1,
-      popularity: clamp(task.popularity + passBonus(result.coords, spots, task.from?.id), 0, 92),
-    });
-  }
-
-  // Sólo distancias razonablemente cercanas a lo pedido.
-  const fitting = candidates.filter((c) => {
-    const d = lineLength(c.line) * c.laps;
-    return d >= targetM * 0.7 && d <= targetM * 1.35;
-  });
-
-  onProgress("Midiendo la altimetría de cada ruta…");
-  const measured = await pool(fitting, 3, async (c) => {
-    const onePass = lineLength(c.line);
-    const n = clamp(Math.round(onePass / 40), 20, 100);
-    const pts = sampleEvenly(c.line, n);
-    let elev = null;
-    try { elev = await elevations(pts); } catch { /* sin altimetría */ }
-    const st = elev ? elevationStats(elev) : null;
-    return { ...c, samples: pts, elev, onePass, stats: st };
-  });
-
-  const wantIdx = TERRAIN_ORDER.indexOf(terrain);
-  const routes = measured.filter(Boolean).map((c) => {
-    const distance = c.onePass * c.laps;
-    const km = distance / 1000;
-    const gain = c.stats ? c.stats.gain * c.laps : null;
-    const t = gain == null ? null : classifyTerrain(gain / km);
-    const terrainMatch = t == null ? 50 : [100, 40, 0][Math.abs(TERRAIN_ORDER.indexOf(t) - wantIdx)];
-    const distMatch = clamp(100 - (Math.abs(distance - targetM) / targetM) * 200, 0, 100);
-    return {
-      ...c,
-      distance,
-      gain,
-      loss: c.stats ? c.stats.loss * c.laps : null,
-      gainPerKm: gain == null ? null : gain / km,
-      terrain: t,
-      difficulty: difficultyOf(km, gain || 0),
-      score: Math.round(0.45 * c.popularity + 0.3 * distMatch + 0.25 * terrainMatch),
-      start: c.line[0],
-    };
-  });
-
-  routes.sort((a, b) => b.score - a.score);
-  const unique = [];
-  for (const r of routes) {
-    const dup = unique.some(
-      (u) =>
-        haversine(u.start, r.start) < 200 &&
-        Math.abs(u.distance - r.distance) / r.distance < 0.06 &&
-        Math.abs((u.gain || 0) - (r.gain || 0)) < 15
+    peaks.slice(0, terrain === "hilly" ? 3 : 1).forEach((p) =>
+      run(loopJob({ key: p.id, type: "summit", peak: p, popularity: p.popularity }))
     );
-    if (!dup) unique.push(r);
+    const heads = inRadius.filter((s) => s.kind === "trailhead").sort((a, b) => a.dist - b.dist);
+    heads.slice(0, terrain === "hilly" ? 2 : 1).forEach((h) =>
+      run(loopJob({
+        key: h.id, type: "loop", start: h.center, brg: bearing(origin, h.center), popularity: h.popularity, from: h,
+      }))
+    );
   }
 
-  const matching = unique.filter((r) => r.terrain === terrain);
-  let list = matching;
-  if (!matching.length && unique.length) {
+  // Los trabajos pueden agregar más trabajos (circuito → altimetría): esperar hasta vaciar.
+  while (done < pending) await Promise.all(jobs.slice());
+
+  const out = finalize(results, terrain, true);
+  if (out.fallback && !out.routes.some((r) => r.terrain === terrain)) {
     notice = `No encontramos rutas "${TERRAINS[terrain].label.toLowerCase()}" en este radio. Te mostramos las más parecidas.`;
-    list = unique;
   }
-  return { routes: list.slice(0, 8), notice, spots: inRadius };
+  return { routes: out.routes, notice, spots: inRadius };
 }
